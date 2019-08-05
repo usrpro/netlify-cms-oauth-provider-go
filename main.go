@@ -1,24 +1,31 @@
 package main
 
 import (
+	// Refer to dotenv package first, to ensure it loads any .env settings before other init() functions try and use 'em.. isn't Golang great?
+
+	"crypto/hmac"
+	"crypto/sha1"
+	"encoding/hex"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
+	"strings"
 
 	"github.com/gorilla/pat"
+	"github.com/joho/godotenv"
 	"github.com/markbates/goth"
 	"github.com/markbates/goth/gothic"
 	"github.com/markbates/goth/providers/bitbucket"
 	"github.com/markbates/goth/providers/github"
 	"github.com/markbates/goth/providers/gitlab"
-
-	"github.com/joho/godotenv"
 )
 
 var (
-	host         = "localhost:3000"
-	callbackHost = "localhost:3000"
+	host = "localhost:3000"
+	base = host
 )
 
 const (
@@ -34,10 +41,7 @@ const (
     function receiveMessage(e) {
       console.log("Receive message:", e);
       // send message to main window with da app
-      window.opener.postMessage(
-        "authorization:" + provider + ":" + status + ":" + result,
-        e.origin
-      );
+      window.opener.postMessage("authorization:" + provider + ":" + status + ":" + result, "*");
     }
     window.addEventListener("message", receiveMessage, false);
     // Start handshake with parent
@@ -46,7 +50,7 @@ const (
       "authorizing:" + provider,
       "*"
     );
-  })("%s", "%s", %s)
+  })("%s", "%s", '%s')
   </script></head><body></body></html>`
 )
 
@@ -60,8 +64,8 @@ func handleMain(res http.ResponseWriter, req *http.Request) {
 
 // GET /auth Page  redirecting after provider get param
 func handleAuth(res http.ResponseWriter, req *http.Request) {
-	url := fmt.Sprintf("auth/%s", req.FormValue("provider"))
-	log.Printf("redirect to %s\n", url)
+	url := fmt.Sprintf("%s/auth/%s", base, req.FormValue("provider"))
+	fmt.Printf("redirect to %s\n", url)
 	http.Redirect(res, req, url, http.StatusTemporaryRedirect)
 }
 
@@ -108,6 +112,58 @@ func handleSuccess(res http.ResponseWriter, req *http.Request) {
 	res.Write([]byte(""))
 }
 
+// POST /callback/deploy
+func handleDeploy(res http.ResponseWriter, req *http.Request) {
+	fmt.Printf("deploy from github..")
+	// Check signature in webhook
+	if hookSecret, ok := os.LookupEnv("GITHUB_HOOK_SECRET"); ok {
+		if isValidSignature(req, hookSecret) {
+			// Go ahead and run a deploy, ignoring the webhook content completely..
+			if hookExec, ok := os.LookupEnv("GITHUB_HOOK_EXEC"); ok {
+				cmd := exec.Command(hookExec)
+				err := cmd.Run()
+				if err != nil {
+					fmt.Printf("unable to run deploy command (%s): %v\n", hookExec, err)
+				} else {
+					fmt.Printf("ok\n")
+				}
+			} else {
+				fmt.Printf("missing GITHUB_HOOK_EXEC env\n")
+			}
+		} else {
+			fmt.Printf("invalid hook signature\n")
+		}
+	} else {
+		fmt.Printf("no secret, skipping\n")
+	}
+	res.Write([]byte(""))
+}
+
+// https://stackoverflow.com/questions/53242837/validating-github-webhook-hmac-signature-in-go
+func isValidSignature(r *http.Request, key string) bool {
+	// Assuming a non-empty header
+	gotHash := strings.SplitN(r.Header.Get("X-Hub-Signature"), "=", 2)
+	if gotHash[0] != "sha1" {
+		return false
+	}
+	defer r.Body.Close()
+
+	b, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		fmt.Printf("Cannot read the request body: %s\n", err)
+		return false
+	}
+
+	hash := hmac.New(sha1.New, []byte(key))
+	if _, err := hash.Write(b); err != nil {
+		fmt.Printf("Cannot compute the HMAC for request: %s\n", err)
+		return false
+	}
+
+	expectedHash := hex.EncodeToString(hash.Sum(nil))
+	return gotHash[1] == expectedHash
+}
+
 func init() {
 	err := godotenv.Load()
 	if err != nil {
@@ -116,8 +172,8 @@ func init() {
 	if hostEnv, ok := os.LookupEnv("HOST"); ok {
 		host = hostEnv
 	}
-	if callbackEnv, ok := os.LookupEnv("CALLBACK_HOST"); ok {
-		callbackHost = callbackEnv
+	if baseEnv, ok := os.LookupEnv("BASE"); ok {
+		base = baseEnv
 	}
 	var (
 		gitlabProvider goth.Provider
@@ -125,7 +181,7 @@ func init() {
 	if gitlabServer, ok := os.LookupEnv("GITLAB_SERVER"); ok {
 		gitlabProvider = gitlab.NewCustomisedURL(
 			os.Getenv("GITLAB_KEY"), os.Getenv("GITLAB_SECRET"),
-			fmt.Sprintf("https://%s/callback/gitlab", callbackHost),
+			fmt.Sprintf("https://%s/callback/gitlab", base),
 			fmt.Sprintf("https://%s/oauth/authorize", gitlabServer),
 			fmt.Sprintf("https://%s/oauth/token", gitlabServer),
 			fmt.Sprintf("https://%s/api/v3/user", gitlabServer),
@@ -133,17 +189,18 @@ func init() {
 	} else {
 		gitlabProvider = gitlab.New(
 			os.Getenv("GITLAB_KEY"), os.Getenv("GITLAB_SECRET"),
-			fmt.Sprintf("https://%s/callback/gitlab", callbackHost),
+			fmt.Sprintf("https://%s/callback/gitlab", base),
 		)
 	}
 	goth.UseProviders(
 		github.New(
 			os.Getenv("GITHUB_KEY"), os.Getenv("GITHUB_SECRET"),
-			fmt.Sprintf("https://%s/callback/github", callbackHost),
+			fmt.Sprintf("https://%s/callback/github", base),
 		),
 		bitbucket.New(
 			os.Getenv("BITBUCKET_KEY"), os.Getenv("BITBUCKET_SECRET"),
-			fmt.Sprintf("https://%s/callback/bitbucket", callbackHost),
+			fmt.Sprintf("https://%s/callback/bitbucket", base),
+			"repo", // https://developer.github.com/apps/building-oauth-apps/understanding-scopes-for-oauth-apps/
 		),
 		gitlabProvider,
 	)
@@ -151,6 +208,7 @@ func init() {
 
 func main() {
 	router := pat.New()
+	router.Post("/callback/deploy", handleDeploy)
 	router.Get("/callback/{provider}", handleCallbackProvider)
 	router.Get("/auth/{provider}", handleAuthProvider)
 	router.Get("/auth", handleAuth)
