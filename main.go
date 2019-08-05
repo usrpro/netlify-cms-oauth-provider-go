@@ -56,7 +56,7 @@ const (
 
 // GET /
 func handleMain(res http.ResponseWriter, req *http.Request) {
-	log.Printf("handling root route '%s'\n", req)
+	log.Printf("handling root route '%v'\n", req)
 	res.Header().Set("Content-Type", "text/html; charset=utf-8")
 	res.WriteHeader(http.StatusOK)
 	res.Write([]byte(``))
@@ -102,13 +102,13 @@ func handleCallbackProvider(res http.ResponseWriter, req *http.Request) {
 
 // GET /refresh
 func handleRefresh(res http.ResponseWriter, req *http.Request) {
-	log.Printf("refresh with '%s'\n", req)
+	log.Printf("refresh with '%v'\n", req)
 	res.Write([]byte(""))
 }
 
 // GET /success
 func handleSuccess(res http.ResponseWriter, req *http.Request) {
-	log.Printf("success with '%s'\n", req)
+	log.Printf("success with '%v'\n", req)
 	res.Write([]byte(""))
 }
 
